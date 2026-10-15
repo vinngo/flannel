@@ -20,7 +20,16 @@ function oneOf<T extends string>(name: string, allowed: readonly T[], fallback: 
 }
 
 export const config = {
-  agentMode: oneOf("AGENT_MODE", ["stub"] as const, "stub"),
+  agentMode: oneOf("AGENT_MODE", ["stub", "strands"] as const, "stub"),
+  bedrock: {
+    region: str("AWS_REGION", "us-west-2"),
+    modelId: str("BEDROCK_MODEL_ID", "anthropic.claude-haiku-5-5"),
+    effort: oneOf("AGENT_EFFORT", ["low", "medium", "high"] as const, "medium"),
+  },
+  mcp: {
+    url: str("MCP_URL", "http://127.0.0.1:3000/mcp"),
+    apiKey: str("MCP_API_KEY"),
+  },
   plaid: {
     clientId: str("PLAID_CLIENT_ID"),
     secret: str("PLAID_SECRET"),
