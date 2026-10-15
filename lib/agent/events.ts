@@ -1,7 +1,3 @@
-// The SSE contract between the chat route and the UI. Agent adapters (the
-// stub now, Strands on AgentCore later) translate their own stream into these.
-// Safe to import from client components: types only.
-
 export type AgentEvent =
   | { type: "session"; sessionId: string }
   | { type: "text"; delta: string }
