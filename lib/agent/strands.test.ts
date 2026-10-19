@@ -105,6 +105,31 @@ describe("StrandsAgent", () => {
     expect(events.at(-1)).toEqual({ type: "done", asOf: undefined });
   });
 
+  it("emits an artifact event when file_artifact succeeds", async () => {
+    const key = "sessions/test/weights.csv";
+    const { events } = await run([{ tools: ["file_artifact"] }, { text: "Attached." }], {
+      file_artifact: { s3_key: key, summary: key, artifact: { key, name: "weights.csv", content_type: "text/csv" } },
+    });
+    expect(events.slice(0, 3)).toEqual([
+      { type: "tool_start", id: "t1-0", name: "file_artifact", input: {} },
+      { type: "tool_end", id: "t1-0", ok: true, summary: key },
+      { type: "artifact", key, name: "weights.csv", contentType: "text/csv" },
+    ]);
+  });
+
+  it("passes the run's session id to the tool factory", async () => {
+    const seen: string[] = [];
+    const agent = new StrandsAgent({
+      model: () => new ScriptedModel([{ text: "Hi." }]),
+      tools: ({ sessionId }) => {
+        seen.push(sessionId);
+        return fakeTools({});
+      },
+    });
+    for await (const _ of agent.run("question", { sessionId: "abc" })) void _;
+    expect(seen).toEqual(["abc"]);
+  });
+
   it("turns a model failure into an error event and still closes the tools", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const session = fakeTools({});
@@ -153,6 +178,17 @@ describe("readToolResult", () => {
 
   it("skips non-text blocks", () => {
     expect(readToolResult([{ type: "jsonBlock" }])).toEqual({ summary: undefined, dataAsOf: undefined });
+  });
+
+  it("reads an artifact only under the session prefix", () => {
+    const artifact = (key: string) => text({ summary: "s", artifact: { key, name: "a.csv", content_type: "text/csv" } });
+    expect(readToolResult(artifact("sessions/x/a.csv")).artifact).toEqual({
+      key: "sessions/x/a.csv",
+      name: "a.csv",
+      contentType: "text/csv",
+    });
+    expect(readToolResult(artifact("snapshots/x/holdings.csv")).artifact).toBeUndefined();
+    expect(readToolResult(artifact("sessions/../latest.json")).artifact).toBeUndefined();
   });
 });
 
