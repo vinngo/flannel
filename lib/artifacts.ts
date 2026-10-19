@@ -24,8 +24,7 @@ const PRESIGN_SECONDS = 300;
 export interface ArtifactStore {
   /** URL the browser can open for this key. */
   urlFor(key: string): Promise<string>;
-  /** Stub agent only: the real agent files artifacts from the sandbox itself. */
-  put(key: string, body: string, contentType: string): Promise<void>;
+  put(key: string, body: string | Uint8Array, contentType: string): Promise<void>;
 }
 
 export class LocalArtifactStore implements ArtifactStore {
@@ -46,10 +45,10 @@ export class LocalArtifactStore implements ArtifactStore {
     return `/api/artifacts/local?key=${encodeURIComponent(key)}`;
   }
 
-  async put(key: string, body: string): Promise<void> {
+  async put(key: string, body: string | Uint8Array): Promise<void> {
     const full = this.resolve(key);
     await fs.mkdir(path.dirname(full), { recursive: true });
-    await fs.writeFile(full, body, "utf8");
+    await fs.writeFile(full, body);
   }
 
   async read(key: string): Promise<Buffer | null> {
@@ -74,7 +73,7 @@ export class S3ArtifactStore implements ArtifactStore {
     return getSignedUrl(this.client, cmd, { expiresIn: PRESIGN_SECONDS });
   }
 
-  async put(key: string, body: string, contentType: string): Promise<void> {
+  async put(key: string, body: string | Uint8Array, contentType: string): Promise<void> {
     await this.client.send(
       new PutObjectCommand({ Bucket: this.bucket, Key: assertArtifactKey(key), Body: body, ContentType: contentType }),
     );

@@ -12,6 +12,14 @@ function list(name: string, fallback: string[]): string[] {
   return v ? v.split(",").map((s) => s.trim()).filter(Boolean) : fallback;
 }
 
+function int(name: string, fallback: number): number {
+  const v = str(name);
+  if (!v) return fallback;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0) throw new Error(`${name} must be a positive integer (got "${v}")`);
+  return n;
+}
+
 function oneOf<T extends string>(name: string, allowed: readonly T[], fallback: T): T {
   const v = str(name).toLowerCase();
   if (!v) return fallback;
@@ -25,6 +33,13 @@ export const config = {
     region: str("AWS_REGION", "us-west-2"),
     modelId: str("BEDROCK_MODEL_ID", "anthropic.claude-haiku-5-5"),
     effort: oneOf("AGENT_EFFORT", ["low", "medium", "high"] as const, "medium"),
+  },
+  codeInterpreter: {
+    region: str("AWS_REGION", "us-west-2"),
+    // The AWS-managed interpreter: no network access, pandas and matplotlib preinstalled.
+    identifier: str("CODE_INTERPRETER_ID", "aws.codeinterpreter.v1"),
+    // Hard cap on a session's life, so a run that never closes its session can't bill for hours.
+    timeoutSeconds: int("CODE_INTERPRETER_TIMEOUT_SECONDS", 900),
   },
   mcp: {
     url: str("MCP_URL", "http://127.0.0.1:3000/mcp"),
