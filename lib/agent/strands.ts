@@ -1,7 +1,7 @@
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
 import { AnthropicBedrockMantle } from "@anthropic-ai/bedrock-sdk";
-import { Agent, McpClient, type BaseModelConfig, type Model } from "@strands-agents/sdk";
+import { Agent, McpClient, type BaseModelConfig, type Model, type ToolList } from "@strands-agents/sdk";
 import { AnthropicModel } from "@strands-agents/sdk/models/anthropic";
 import { config } from "../config";
 import type { AgentEvent } from "./events";
@@ -32,17 +32,24 @@ function getModel(): AnthropicModel {
   return model;
 }
 
-function newMcpClient(): McpClient {
-  return new McpClient({
+/** The tools for one run, plus how to release them when the run ends. */
+export interface ToolSession {
+  tools: ToolList;
+  close(): Promise<void>;
+}
+
+function mcpToolSession(): ToolSession {
+  const mcp = new McpClient({
     url: config.mcp.url,
     headers: config.mcp.apiKey ? { Authorization: `Bearer ${config.mcp.apiKey}` } : undefined,
   });
+  return { tools: [mcp], close: () => mcp.disconnect() };
 }
 
 const isTimestamp = (v: unknown): v is string => typeof v === "string" && !Number.isNaN(Date.parse(v));
 
 /** The older of two refresh times; an answer is only as fresh as its oldest input. */
-function older(a: string | undefined, b: string | undefined): string | undefined {
+export function older(a: string | undefined, b: string | undefined): string | undefined {
   if (!a || !b) return a ?? b;
   return Date.parse(b) < Date.parse(a) ? b : a;
 }
@@ -51,7 +58,7 @@ function older(a: string | undefined, b: string | undefined): string | undefined
  * The MCP tools return one text block of JSON. Every result carries
  * `data_as_of`: Plaid's oldest refresh time for the data it covers, or null.
  */
-function readToolResult(content: readonly { type: string }[]): { summary?: string; dataAsOf?: string } {
+export function readToolResult(content: readonly { type: string }[]): { summary?: string; dataAsOf?: string } {
   let dataAsOf: string | undefined;
   let summary: string | undefined;
   for (const block of content) {
@@ -81,15 +88,27 @@ function describeError(err: unknown): string {
   return "The agent hit an error. Try again.";
 }
 
+export interface StrandsAgentDeps {
+  model?: () => Model<BaseModelConfig>;
+  /** A fresh tool session per run; defaults to the plaid-agent MCP server. */
+  tools?: () => ToolSession;
+}
+
 export class StrandsAgent implements FlannelAgent {
-  /** `model` is injectable so the event mapping can be exercised without Bedrock. */
-  constructor(private model: () => Model<BaseModelConfig> = getModel) {}
+  private model: () => Model<BaseModelConfig>;
+  private tools: () => ToolSession;
+
+  /** Both are injectable so the event mapping can be tested without Bedrock or MCP. */
+  constructor({ model = getModel, tools = mcpToolSession }: StrandsAgentDeps = {}) {
+    this.model = model;
+    this.tools = tools;
+  }
 
   async *run(question: string, { signal }: AgentRunOptions): AsyncIterable<AgentEvent> {
-    const mcp = newMcpClient();
+    const session = this.tools();
     const agent = new Agent({
       model: this.model(),
-      tools: [mcp],
+      tools: session.tools,
       systemPrompt: SYSTEM_PROMPT,
       printer: false,
     });
@@ -130,7 +149,7 @@ export class StrandsAgent implements FlannelAgent {
       console.error("strands agent run failed", err);
       yield { type: "error", message: describeError(err) };
     } finally {
-      await mcp.disconnect().catch(() => {});
+      await session.close().catch(() => {});
     }
   }
 }
