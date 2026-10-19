@@ -41,29 +41,25 @@ function newMcpClient(): McpClient {
 
 const isTimestamp = (v: unknown): v is string => typeof v === "string" && !Number.isNaN(Date.parse(v));
 
-/** All `as_of` values anywhere in a tool's JSON output, including `as_of_by_broker` maps. */
-function collectAsOf(value: unknown, out: string[]): void {
-  if (Array.isArray(value)) {
-    for (const v of value) collectAsOf(v, out);
-  } else if (value && typeof value === "object") {
-    for (const [k, v] of Object.entries(value)) {
-      if (k === "as_of" && isTimestamp(v)) out.push(v);
-      else if (k === "as_of_by_broker" && v && typeof v === "object") out.push(...Object.values(v).filter(isTimestamp));
-      else collectAsOf(v, out);
-    }
-  }
+/** The older of two refresh times; an answer is only as fresh as its oldest input. */
+function older(a: string | undefined, b: string | undefined): string | undefined {
+  if (!a || !b) return a ?? b;
+  return Date.parse(b) < Date.parse(a) ? b : a;
 }
 
-/** The MCP tools return one text block of JSON; pull out the summary and as_of values. */
-function readToolResult(content: readonly { type: string }[]): { summary?: string; asOf: string[] } {
-  const asOf: string[] = [];
+/**
+ * The MCP tools return one text block of JSON. Every result carries
+ * `data_as_of`: Plaid's oldest refresh time for the data it covers, or null.
+ */
+function readToolResult(content: readonly { type: string }[]): { summary?: string; dataAsOf?: string } {
+  let dataAsOf: string | undefined;
   let summary: string | undefined;
   for (const block of content) {
     if (block.type !== "textBlock") continue;
     const text = (block as unknown as { text: string }).text;
     try {
       const data = JSON.parse(text) as Record<string, unknown>;
-      collectAsOf(data, asOf);
+      if (isTimestamp(data.data_as_of)) dataAsOf = older(dataAsOf, data.data_as_of);
       const s = data.summary ?? (data.error as { message?: string } | undefined)?.message;
       if (typeof s === "string") summary = s;
     } catch {
@@ -71,7 +67,7 @@ function readToolResult(content: readonly { type: string }[]): { summary?: strin
     }
   }
   if (summary && summary.length > TOOL_SUMMARY_CHARS) summary = `${summary.slice(0, TOOL_SUMMARY_CHARS - 1)}…`;
-  return { summary, asOf };
+  return { summary, dataAsOf };
 }
 
 function describeError(err: unknown): string {
@@ -98,7 +94,7 @@ export class StrandsAgent implements FlannelAgent {
       printer: false,
     });
 
-    const asOfSeen: string[] = [];
+    let asOf: string | undefined;
     let wroteText = false;
     let needsBreak = false;
 
@@ -121,16 +117,14 @@ export class StrandsAgent implements FlannelAgent {
             yield { type: "tool_start", id: ev.toolUse.toolUseId, name: ev.toolUse.name, input: ev.toolUse.input };
             break;
           case "afterToolCallEvent": {
-            const { summary, asOf } = readToolResult(ev.result.content);
-            asOfSeen.push(...asOf);
-            yield { type: "tool_end", id: ev.toolUse.toolUseId, ok: ev.result.status === "success", summary };
+            const result = readToolResult(ev.result.content);
+            asOf = older(asOf, result.dataAsOf);
+            yield { type: "tool_end", id: ev.toolUse.toolUseId, ok: ev.result.status === "success", summary: result.summary };
             break;
           }
         }
       }
-      // An answer is only as fresh as its oldest input.
-      asOfSeen.sort();
-      yield { type: "done", asOf: asOfSeen[0] };
+      yield { type: "done", asOf };
     } catch (err) {
       if (signal?.aborted) return;
       console.error("strands agent run failed", err);
