@@ -33,6 +33,7 @@ export const config = {
     region: str("AWS_REGION", "us-west-2"),
     modelId: str("BEDROCK_MODEL_ID", "anthropic.claude-haiku-5-5"),
     effort: oneOf("AGENT_EFFORT", ["low", "medium", "high"] as const, "medium"),
+    provider: oneOf("PROVIDER", ["anthropic", "openai"] as const, "anthropic"),
   },
   codeInterpreter: {
     region: str("AWS_REGION", "us-west-2"),
