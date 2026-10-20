@@ -1,8 +1,11 @@
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
 import { AnthropicBedrockMantle } from "@anthropic-ai/bedrock-sdk";
+import OpenAI from "openai";
+import { bedrock } from "openai/providers/bedrock/aws";
 import { Agent, McpClient, type BaseModelConfig, type Model, type ToolList } from "@strands-agents/sdk";
 import { AnthropicModel } from "@strands-agents/sdk/models/anthropic";
+import { OpenAIModel } from "@strands-agents/sdk/models/openai";
 import { assertArtifactKey, getArtifactStore } from "../artifacts";
 import { config } from "../config";
 import { AgentCoreSandbox } from "../sandbox";
@@ -21,19 +24,30 @@ import type { Agent as FlannelAgent, AgentRunOptions } from "./types";
 const MAX_TURNS = 14;
 const TOOL_SUMMARY_CHARS = 140;
 
-let model: AnthropicModel | null = null;
+let model: AnthropicModel | OpenAIModel | null = null;
 
-function getModel(): AnthropicModel {
+function getModel(): AnthropicModel | OpenAIModel {
   if (!model) {
-    const client = new AnthropicBedrockMantle({ awsRegion: config.bedrock.region });
-    model = new AnthropicModel({
-      // Mantle shares the Messages surface but is typed against a newer SDK
-      // than the one Strands bundles.
-      client: client as unknown as Anthropic,
-      modelId: config.bedrock.modelId,
-      maxTokens: 16000,
-      params: { output_config: { effort: config.bedrock.effort } },
-    });
+    const { provider, region, modelId, effort } = config.bedrock;
+    if (provider === "openai") {
+      // The OpenAI SDK's Bedrock provider signs requests with the default AWS credentials.
+      model = new OpenAIModel({
+        client: new OpenAI({ provider: bedrock({ region }) }),
+        modelId,
+        maxTokens: 16000,
+        params: { reasoning: { effort } },
+      });
+    } else {
+      const client = new AnthropicBedrockMantle({ awsRegion: region });
+      model = new AnthropicModel({
+        // Mantle shares the Messages surface but is typed against a newer SDK
+        // than the one Strands bundles.
+        client: client as unknown as Anthropic,
+        modelId,
+        maxTokens: 16000,
+        params: { output_config: { effort } },
+      });
+    }
   }
   return model;
 }
