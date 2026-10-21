@@ -1,8 +1,7 @@
 import "server-only";
-import type Anthropic from "@anthropic-ai/sdk";
+import Anthropic from "@anthropic-ai/sdk";
 import { AnthropicBedrockMantle } from "@anthropic-ai/bedrock-sdk";
 import OpenAI from "openai";
-import { Anthropic as AnthropicClient}  from "@anthropic-ai/sdk/index.js";
 import { bedrock } from "openai/providers/bedrock/aws";
 import { Agent, McpClient, type BaseModelConfig, type Model, type ToolList } from "@strands-agents/sdk";
 import { AnthropicModel } from "@strands-agents/sdk/models/anthropic";
@@ -16,58 +15,55 @@ import { SYSTEM_PROMPT } from "./prompt";
 import { sandboxTools } from "./sandbox-tools";
 import type { Agent as FlannelAgent, AgentRunOptions } from "./types";
 
-// Strands agent with Claude on Bedrock, calling the plaid-agent MCP tools and
-// analyzing their snapshots in an AgentCore Code Interpreter sandbox.
-// Claude calls go through the Anthropic SDK's Bedrock Mantle client; Strands'
-// AnthropicModel only needs `messages.stream` / `messages.countTokens` from it.
+// Strands agent with Claude or OpenAI models, on Bedrock or the provider's own API,
+// calling the plaid-agent MCP tools and analyzing their snapshots in an AgentCore
+// Code Interpreter sandbox. Claude on Bedrock goes through the Anthropic SDK's
+// Bedrock Mantle client; Strands' AnthropicModel only needs `messages.stream` /
+// `messages.countTokens` from it.
 
 // Sandbox answers take more steps: pull, load, one or two runs of code, file.
 const MAX_TURNS = 14;
 const TOOL_SUMMARY_CHARS = 140;
 
+const MAX_TOKENS = 16000;
+
 let model: AnthropicModel | OpenAIModel | null = null;
 
-function getModel(): AnthropicModel | OpenAIModel {
-  if (!model) {
-    const { provider, type, apiKey, directModelId} = config.inference
-    const { region, modelId, effort } = config.bedrock;
-    if (provider === "openai") {
-      // The OpenAI SDK's Bedrock provider signs requests with the default AWS credentials.
-      if (type === "direct") {
-        model = new OpenAIModel({
-          client: new OpenAI({ apiKey }),
-          modelId: directModelId,
-          maxTokens: 16000,
-          params: { reasoning: { effort } },
-        });
-      } else {
-        model = new OpenAIModel({
-          client: new OpenAI({ provider: bedrock({ region }) }),
-          modelId,
-          maxTokens: 16000,
-          params: { reasoning: { effort } },
-        });
-      }
-    } else {
-      if (type === "direct") {
-        model = new AnthropicModel({
-          client: new AnthropicClient({ apiKey }) as unknown as Anthropic,
-          modelId: directModelId,
-          maxTokens: 16000,
-          params: { output_config: { effort } },
-        });
-      } else {
-        model = new AnthropicModel({
-          // Mantle shares the Messages surface but is typed against a newer SDK
-          // than the one Strands bundles.
-          client: new AnthropicBedrockMantle({ awsRegion: region }) as unknown as Anthropic,
-          modelId,
-          maxTokens: 16000,
-          params: { output_config: { effort } },
-        });
-      }
-    }
+/** The Strands model for an inference config: the provider's own API (direct) or Bedrock. */
+export function createModel({
+  type,
+  provider,
+  region,
+  apiKey,
+  modelId,
+  effort,
+}: typeof config.inference): AnthropicModel | OpenAIModel {
+  if (provider === "openai") {
+    // On Bedrock, the OpenAI SDK's Bedrock provider signs requests with the default AWS credentials.
+    const client = type === "direct" ? new OpenAI({ apiKey }) : new OpenAI({ provider: bedrock({ region }) });
+    return new OpenAIModel({
+      client,
+      modelId,
+      maxTokens: MAX_TOKENS,
+      ...(effort && { params: { reasoning: { effort } } }),
+    });
   }
+  const client =
+    type === "direct"
+      ? new Anthropic({ apiKey })
+      : // Mantle shares the Messages surface but is typed against a newer SDK
+        // than the one Strands bundles.
+        (new AnthropicBedrockMantle({ awsRegion: region }) as unknown as Anthropic);
+  return new AnthropicModel({
+    client,
+    modelId,
+    maxTokens: MAX_TOKENS,
+    ...(effort && { params: { output_config: { effort } } }),
+  });
+}
+
+function getModel(): AnthropicModel | OpenAIModel {
+  model ??= createModel(config.inference);
   return model;
 }
 
@@ -143,10 +139,34 @@ export function readToolResult(content: readonly { type: string }[]): ToolResult
   return { summary, dataAsOf, artifact };
 }
 
-function describeError(err: unknown): string {
+const PROVIDER_NAMES = { anthropic: "Anthropic", openai: "OpenAI" } as const;
+
+/** The Anthropic or OpenAI SDK error in `err` or its causes: both name their classes alike. */
+function findApiError(err: unknown): { kind: string; status?: number } | undefined {
+  for (let e = err, depth = 0; e && depth < 5; e = (e as Error).cause, depth++) {
+    const kind = (e as object).constructor?.name ?? "";
+    if (/^(APIConnection|Authentication|PermissionDenied|NotFound|BadRequest)/.test(kind)) {
+      return { kind, status: (e as { status?: number }).status };
+    }
+  }
+  return undefined;
+}
+
+export function describeError(err: unknown, inference: Pick<typeof config.inference, "type" | "provider"> = config.inference): string {
   const name = (err as Error)?.name ?? "";
+  const model = inference.type === "direct" ? `the ${PROVIDER_NAMES[inference.provider]} API` : "Bedrock";
+  const api = findApiError(err);
+  if (api?.kind.startsWith("APIConnection")) {
+    return `Couldn't reach ${model}. Check your network connection.`;
+  }
+  if (inference.type === "direct" && (api?.status === 401 || api?.status === 403)) {
+    return `${PROVIDER_NAMES[inference.provider]} rejected PROVIDER_API_KEY. Check that the key is valid.`;
+  }
+  if (api?.status === 400 || api?.status === 404) {
+    return `${model} rejected the request. Check that the model ID and AGENT_EFFORT are supported by this model.`;
+  }
   if (name === "CredentialsProviderError" || /credential/i.test((err as Error)?.message ?? "")) {
-    return "No AWS credentials found for Bedrock. Configure an AWS profile or AWS_* environment variables.";
+    return "No AWS credentials found for Bedrock or Code Interpreter. Configure an AWS profile or AWS_* environment variables.";
   }
   if (/ECONNREFUSED|fetch failed|connect/i.test((err as Error)?.message ?? "")) {
     return `Couldn't reach the MCP server at ${config.mcp.url}. Is plaid-agent-mcp running (npm run dev)?`;

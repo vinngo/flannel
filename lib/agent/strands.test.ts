@@ -1,8 +1,13 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { AnthropicBedrockMantle } from "@anthropic-ai/bedrock-sdk";
 import { Model, tool, type ModelStreamEvent } from "@strands-agents/sdk";
+import { AnthropicModel } from "@strands-agents/sdk/models/anthropic";
+import { OpenAIModel } from "@strands-agents/sdk/models/openai";
+import OpenAI from "openai";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { AgentEvent } from "./events";
-import { older, readToolResult, StrandsAgent, type ToolSession } from "./strands";
+import { createModel, describeError, older, readToolResult, StrandsAgent, type ToolSession } from "./strands";
 
 // The real StrandsAgent and Strands loop, with a scripted model and local tools
 // that return the same JSON text the plaid-agent MCP tools do.
@@ -204,5 +209,74 @@ describe("older", () => {
     expect(older(undefined, FIDELITY)).toBe(FIDELITY);
     expect(older(FIDELITY, undefined)).toBe(FIDELITY);
     expect(older(undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe("createModel", () => {
+  const base = { region: "us-west-2", apiKey: "", modelId: "bedrock-model", effort: "medium" as const };
+  const clientOf = (m: unknown) => (m as { _client: unknown })._client;
+
+  it("uses Bedrock Mantle for Claude on Bedrock", () => {
+    const m = createModel({ ...base, type: "bedrock", provider: "anthropic" });
+    expect(m).toBeInstanceOf(AnthropicModel);
+    expect(clientOf(m)).toBeInstanceOf(AnthropicBedrockMantle);
+    expect(m.getConfig()).toMatchObject({ modelId: "bedrock-model", params: { output_config: { effort: "medium" } } });
+  });
+
+  it("uses the Anthropic API with the key and direct model ID", () => {
+    const m = createModel({ ...base, type: "direct", provider: "anthropic", apiKey: "sk-ant-test", modelId: "claude-direct" });
+    expect(m).toBeInstanceOf(AnthropicModel);
+    expect(clientOf(m)).toBeInstanceOf(Anthropic);
+    expect((clientOf(m) as Anthropic).apiKey).toBe("sk-ant-test");
+    expect(m.getConfig().modelId).toBe("claude-direct");
+  });
+
+  it("uses the OpenAI API with the key for direct OpenAI", () => {
+    const m = createModel({ ...base, type: "direct", provider: "openai", apiKey: "sk-test", modelId: "gpt-direct" });
+    expect(m).toBeInstanceOf(OpenAIModel);
+    expect((clientOf(m) as OpenAI).apiKey).toBe("sk-test");
+    expect(m.getConfig()).toMatchObject({ modelId: "gpt-direct", params: { reasoning: { effort: "medium" } } });
+  });
+
+  it("uses OpenAI on Bedrock", () => {
+    const m = createModel({ ...base, type: "bedrock", provider: "openai" });
+    expect(m).toBeInstanceOf(OpenAIModel);
+    expect((clientOf(m) as OpenAI).baseURL).toContain("us-west-2");
+    expect(m.getConfig().modelId).toBe("bedrock-model");
+  });
+
+  it("sends no effort params when effort is unset", () => {
+    const m = createModel({ ...base, type: "direct", provider: "openai", apiKey: "k", modelId: "gpt-4o", effort: undefined });
+    expect(m.getConfig()).not.toHaveProperty("params");
+  });
+});
+
+describe("describeError", () => {
+  const direct = { type: "direct", provider: "anthropic" } as const;
+  const bedrockMode = { type: "bedrock", provider: "anthropic" } as const;
+
+  it("blames the provider, not the MCP server, for an API connection error", () => {
+    const err = new Anthropic.APIConnectionError({});
+    expect(describeError(err, direct)).toBe("Couldn't reach the Anthropic API. Check your network connection.");
+    expect(describeError(err, bedrockMode)).toBe("Couldn't reach Bedrock. Check your network connection.");
+  });
+
+  it("finds the API error in an error's causes", () => {
+    const err = new Error("model failed", { cause: new OpenAI.APIConnectionError({}) });
+    expect(describeError(err, { type: "direct", provider: "openai" })).toContain("the OpenAI API");
+  });
+
+  it("names PROVIDER_API_KEY for an auth failure in direct mode", () => {
+    const err = new Anthropic.AuthenticationError(401, undefined, "invalid x-api-key", new Headers());
+    expect(describeError(err, direct)).toBe("Anthropic rejected PROVIDER_API_KEY. Check that the key is valid.");
+  });
+
+  it("points at the model ID and effort for a rejected request", () => {
+    const err = new OpenAI.BadRequestError(400, undefined, "Unsupported parameter: reasoning", new Headers());
+    expect(describeError(err, { type: "direct", provider: "openai" })).toContain("model ID and AGENT_EFFORT");
+  });
+
+  it("still reports an unreachable MCP server", () => {
+    expect(describeError(new TypeError("fetch failed"), direct)).toContain("Couldn't reach the MCP server");
   });
 });
