@@ -29,11 +29,16 @@ function oneOf<T extends string>(name: string, allowed: readonly T[], fallback: 
 
 export const config = {
   agentMode: oneOf("AGENT_MODE", ["stub", "strands"] as const, "stub"),
+  inference: {
+    type: oneOf("INFERENCE_TYPE", ["direct", "bedrock"] as const, "bedrock"),
+    provider: oneOf("PROVIDER", ["anthropic", "openai"] as const, "anthropic"),
+    apiKey: str("PROVIDER_API_KEY"),
+    directModelId: str("DIRECT_MODEL_ID"),
+  },
   bedrock: {
     region: str("AWS_REGION", "us-west-2"),
     modelId: str("BEDROCK_MODEL_ID", "anthropic.claude-haiku-5-5"),
     effort: oneOf("AGENT_EFFORT", ["low", "medium", "high"] as const, "medium"),
-    provider: oneOf("PROVIDER", ["anthropic", "openai"] as const, "anthropic"),
   },
   codeInterpreter: {
     region: str("AWS_REGION", "us-west-2"),
