@@ -2,6 +2,7 @@ import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
 import { AnthropicBedrockMantle } from "@anthropic-ai/bedrock-sdk";
 import OpenAI from "openai";
+import { Anthropic as AnthropicClient}  from "@anthropic-ai/sdk/index.js";
 import { bedrock } from "openai/providers/bedrock/aws";
 import { Agent, McpClient, type BaseModelConfig, type Model, type ToolList } from "@strands-agents/sdk";
 import { AnthropicModel } from "@strands-agents/sdk/models/anthropic";
@@ -28,25 +29,43 @@ let model: AnthropicModel | OpenAIModel | null = null;
 
 function getModel(): AnthropicModel | OpenAIModel {
   if (!model) {
-    const { provider, region, modelId, effort } = config.bedrock;
+    const { provider, type, apiKey, directModelId} = config.inference
+    const { region, modelId, effort } = config.bedrock;
     if (provider === "openai") {
       // The OpenAI SDK's Bedrock provider signs requests with the default AWS credentials.
-      model = new OpenAIModel({
-        client: new OpenAI({ provider: bedrock({ region }) }),
-        modelId,
-        maxTokens: 16000,
-        params: { reasoning: { effort } },
-      });
+      if (type === "direct") {
+        model = new OpenAIModel({
+          client: new OpenAI({ apiKey }),
+          modelId: directModelId,
+          maxTokens: 16000,
+          params: { reasoning: { effort } },
+        });
+      } else {
+        model = new OpenAIModel({
+          client: new OpenAI({ provider: bedrock({ region }) }),
+          modelId,
+          maxTokens: 16000,
+          params: { reasoning: { effort } },
+        });
+      }
     } else {
-      const client = new AnthropicBedrockMantle({ awsRegion: region });
-      model = new AnthropicModel({
-        // Mantle shares the Messages surface but is typed against a newer SDK
-        // than the one Strands bundles.
-        client: client as unknown as Anthropic,
-        modelId,
-        maxTokens: 16000,
-        params: { output_config: { effort } },
-      });
+      if (type === "direct") {
+        model = new AnthropicModel({
+          client: new AnthropicClient({ apiKey }) as unknown as Anthropic,
+          modelId: directModelId,
+          maxTokens: 16000,
+          params: { output_config: { effort } },
+        });
+      } else {
+        model = new AnthropicModel({
+          // Mantle shares the Messages surface but is typed against a newer SDK
+          // than the one Strands bundles.
+          client: new AnthropicBedrockMantle({ awsRegion: region }) as unknown as Anthropic,
+          modelId,
+          maxTokens: 16000,
+          params: { output_config: { effort } },
+        });
+      }
     }
   }
   return model;
