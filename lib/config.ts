@@ -27,18 +27,35 @@ function oneOf<T extends string>(name: string, allowed: readonly T[], fallback: 
   throw new Error(`${name} must be one of: ${allowed.join(", ")} (got "${v}")`);
 }
 
+/** Throws when a strands agent would otherwise start with a blank value. */
+function required(name: string, agentMode: string): string {
+  const v = str(name);
+  if (!v && agentMode === "strands") throw new Error(`${name} is required when INFERENCE_TYPE=direct`);
+  return v;
+}
+
+const agentMode = oneOf("AGENT_MODE", ["stub", "strands"] as const, "stub");
+const inferenceType = oneOf("INFERENCE_TYPE", ["direct", "bedrock"] as const, "bedrock");
+const efforts = ["low", "medium", "high"] as const;
+
 export const config = {
-  agentMode: oneOf("AGENT_MODE", ["stub", "strands"] as const, "stub"),
+  agentMode,
   inference: {
-    type: oneOf("INFERENCE_TYPE", ["direct", "bedrock"] as const, "bedrock"),
+    // bedrock: AWS credential chain. direct: the provider's own API with PROVIDER_API_KEY.
+    type: inferenceType,
     provider: oneOf("PROVIDER", ["anthropic", "openai"] as const, "anthropic"),
-    apiKey: str("PROVIDER_API_KEY"),
-    directModelId: str("DIRECT_MODEL_ID"),
-  },
-  bedrock: {
     region: str("AWS_REGION", "us-west-2"),
-    modelId: str("BEDROCK_MODEL_ID", "anthropic.claude-haiku-5-5"),
-    effort: oneOf("AGENT_EFFORT", ["low", "medium", "high"] as const, "medium"),
+    apiKey: inferenceType === "direct" ? required("PROVIDER_API_KEY", agentMode) : "",
+    modelId:
+      inferenceType === "direct"
+        ? required("DIRECT_MODEL_ID", agentMode)
+        : str("BEDROCK_MODEL_ID", "anthropic.claude-haiku-5-5"),
+    // Direct mode takes any model ID, so effort is only sent there when AGENT_EFFORT is set.
+    effort: str("AGENT_EFFORT")
+      ? oneOf("AGENT_EFFORT", efforts, "medium")
+      : inferenceType === "bedrock"
+        ? ("medium" as const)
+        : undefined,
   },
   codeInterpreter: {
     region: str("AWS_REGION", "us-west-2"),
